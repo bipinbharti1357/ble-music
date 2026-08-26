@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only used until Compose takes over; real theming lives in ui/Theme.kt -->
+    <style name="Theme.BleMusic" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/brand_dark</item>
+    </style>
+</resources>
