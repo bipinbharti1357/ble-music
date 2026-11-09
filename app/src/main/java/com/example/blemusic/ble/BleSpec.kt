@@ -4,91 +4,120 @@ import java.util.UUID
 
 /**
  * ============================================================
- *  THE ONLY FILE YOU NEED TO EDIT FOR YOUR HARDWARE.
+ *  Protocol definition for ESP32_Audio_Clock.
  * ============================================================
  *
- * Replace the UUIDs with the ones your firmware advertises, and make the packet
- * builders below produce exactly the bytes your firmware parses.
- *
- * Don't know your UUIDs? Install nRF Connect, connect to the device, and read them
- * off the service list.
+ * This matches the text-based protocol used by ble_full_test.py: the firmware
+ * speaks ASCII commands over Nordic UART (RX = write, TX = notify), not the
+ * binary CMD_PLAY/CMD_STOP scheme from the old template.
  */
 object BleSpec {
 
-    /** Advertised service. Used as a scan filter, so the list only shows your devices. */
-    val SERVICE_UUID: UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
+    val SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 
-    /** Phone -> device. Needs WRITE or WRITE_NO_RESPONSE. */
-    val CONTROL_CHAR_UUID: UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
+    /** Phone -> device. Needs WRITE or WRITE_NO_RESPONSE. Called RX_UUID in the python script. */
+    val CONTROL_CHAR_UUID: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 
-    /** Device -> phone. Needs NOTIFY. Optional: set to null usage is handled gracefully. */
-    val STATUS_CHAR_UUID: UUID = UUID.fromString("0000ffe2-0000-1000-8000-00805f9b34fb")
-
-    /** Standard Client Characteristic Configuration Descriptor. Never change this one. */
-    val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-
-    /** Fallback name match, for devices that don't advertise the service UUID. */
-    const val NAME_PREFIX = "MUSIC"
-
-    // ---------------------------------------------------------------------
-    // Commands
-    // ---------------------------------------------------------------------
-
-    private const val CMD_PLAY: Byte = 0x01
-    private const val CMD_STOP: Byte = 0x02
-    private const val CMD_PAUSE: Byte = 0x03
-    private const val CMD_VOLUME: Byte = 0x04
+    /** Device -> phone. Needs NOTIFY. Called TX_UUID in the python script. */
+    val STATUS_CHAR_UUID: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 
     /**
-     * Play [songIndex] for [durationSeconds]. Pass 0 seconds to play until stopped.
-     *
-     * Layout: [cmd][song][duration_lo][duration_hi]   (little-endian uint16)
-     * e.g. track 3 for 10 minutes -> 01 03 58 02
+     * Standard Client Characteristic Configuration Descriptor.
+     * BUG FIX: this was previously set to CONTROL_CHAR_UUID by mistake, so
+     * getDescriptor(CCCD_UUID) never found anything on the status characteristic
+     * and notifications were never actually enabled on the GATT side. This is the
+     * real, spec-fixed CCCD UUID; do not change it.
      */
-    fun play(songIndex: Int, durationSeconds: Int): ByteArray {
-        val d = durationSeconds.coerceIn(0, 65535)
-        return byteArrayOf(
-            CMD_PLAY,
-            songIndex.coerceIn(0, 255).toByte(),
-            (d and 0xFF).toByte(),
-            ((d shr 8) and 0xFF).toByte()
-        )
+    val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    const val NAME_PREFIX = "ESP32_Audio_Clock"
+
+    /** Conservative default; BleManager narrows this once it knows the negotiated MTU. */
+    const val DEFAULT_CHUNK_SIZE = 220
+
+    // ---------------------------------------------------------------------
+    // Model types
+    // ---------------------------------------------------------------------
+
+    enum class Recurrence { ONCE, DAILY, WEEKLY }
+
+    data class Alarm(
+        val index: Int,
+        val hour: Int,
+        val minute: Int,
+        val filename: String,
+        val recurrence: Recurrence,
+        val weekday: Int? = null
+    )
+
+    /** Raw device file entry. Firmware only sends a name today; size is optional. */
+    data class DeviceFile(val name: String)
+
+    // ---------------------------------------------------------------------
+    // Command builders — one text line per command, ASCII-encoded by the caller.
+    // ---------------------------------------------------------------------
+
+    fun cmdGetStatus(): String = "GET_STATUS"
+
+    fun cmdSetTime(epochSeconds: Long = System.currentTimeMillis() / 1000): String =
+        "SET_TIME:$epochSeconds"
+
+    fun cmdListFiles(): String = "LIST_FILES"
+
+    fun cmdFileStart(filename: String, sizeBytes: Int, crc32Hex: String): String =
+        "FILE_START:$filename:$sizeBytes:$crc32Hex"
+
+    /** [base64Chunk] must already be base64-encoded raw file bytes. */
+    fun cmdFileData(base64Chunk: String): String = "FILE_DATA:$base64Chunk"
+
+    fun cmdFileEnd(): String = "FILE_END"
+
+    /** Firmware expects 0.0..1.0, matching the python script's set_volume(). */
+    fun cmdSetVolume(level: Float): String =
+        "SET_VOL:${level.coerceIn(0f, 1f)}"
+
+    fun cmdPlay(filename: String): String = "PLAY:$filename"
+
+    fun cmdStop(): String = "STOP"
+
+    fun cmdAddAlarm(
+        hour: Int,
+        minute: Int,
+        filename: String,
+        recurrence: Recurrence = Recurrence.DAILY,
+        weekday: Int? = null
+    ): String {
+        val base = "ADD_ALARM:$hour:$minute:$filename:${recurrence.name}"
+        return if (recurrence == Recurrence.WEEKLY && weekday != null) "$base:$weekday" else base
     }
 
-    fun stop(): ByteArray = byteArrayOf(CMD_STOP, 0, 0, 0)
+    fun cmdListAlarms(): String = "LIST_ALARMS"
 
-    fun pause(): ByteArray = byteArrayOf(CMD_PAUSE, 0, 0, 0)
+    fun cmdDeleteAlarm(index: Int): String = "DEL_ALARM:$index"
 
-    /** DFPlayer Mini and most modules use 0..30. */
-    fun volume(level: Int): ByteArray =
-        byteArrayOf(CMD_VOLUME, level.coerceIn(0, 30).toByte(), 0, 0)
+    fun cmdClearAlarms(): String = "CLEAR_ALARMS"
 
     // ---------------------------------------------------------------------
-    // ASCII alternative — delete whichever pair you don't use.
-    // Common with HM-10 / HC-05 style transparent-serial modules where the
-    // firmware does a simple String parse.
+    // Response line prefixes, so BleProtocol doesn't scatter magic strings.
     // ---------------------------------------------------------------------
 
-    fun playAscii(songIndex: Int, durationSeconds: Int): ByteArray =
-        "PLAY:$songIndex,$durationSeconds\n".toByteArray(Charsets.US_ASCII)
+    object Reply {
+        const val INFO = "INFO:"
+        const val FILE = "FILE:"
+        const val LIST_END = "STATUS:LIST_END"
+        const val FILE_UPLOAD_STARTED = "STATUS:FILE_UPLOAD_STARTED"
+        const val FILE_UPLOAD_SUCCESS = "STATUS:FILE_UPLOAD_SUCCESS"
+        const val FILE_UPLOAD_FAILED = "STATUS:FILE_UPLOAD_FAILED"
+        const val VOL = "STATUS:VOL"
+        const val FINISHED = "STATUS:FINISHED"
+        const val ALARM_ADDED = "STATUS:ALARM_ADDED"
+        const val ALARM_ITEM = "ALARM_ITEM:"
+        const val ALARM_LIST_END = "ALARM_LIST_END"
+        const val ALARM_DELETED = "STATUS:ALARM_DELETED"
+        const val ALL_ALARMS_CLEARED = "STATUS:ALL_ALARMS_CLEARED"
+    }
 
-    fun stopAscii(): ByteArray = "STOP\n".toByteArray(Charsets.US_ASCII)
-
-    // ---------------------------------------------------------------------
-    // Track list.
-    //
-    // Indexes must match the file order on the device's SD card. If your firmware
-    // can report its own track list over the status characteristic, parse it in
-    // BleManager.onStatus instead and delete this.
-    // ---------------------------------------------------------------------
-
-    data class Track(val index: Int, val title: String)
-
-    val TRACKS = listOf(
-        Track(1, "Track 1"),
-        Track(2, "Track 2"),
-        Track(3, "Track 3"),
-        Track(4, "Track 4"),
-        Track(5, "Track 5"),
-    )
+    /** Parses "STATUS:ALARM_ADDED:<idx>" -> idx, mirroring the python script's r2 parsing. */
+    fun parseAddedAlarmIndex(reply: String): Int? =
+        reply.substringAfterLast(':', missingDelimiterValue = "").toIntOrNull()
 }

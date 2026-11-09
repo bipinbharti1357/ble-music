@@ -54,7 +54,7 @@ class PlayLaterWorker(
             return if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
 
-        ble.send(BleSpec.play(songIndex, durationSeconds))
+       // ble.send(BleSpec.play(songIndex, durationSeconds))
         delay(1_500)          // let the write land before tearing down the link
         ble.disconnect()
         return Result.success()

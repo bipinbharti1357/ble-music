@@ -20,25 +20,38 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -95,7 +108,7 @@ private fun Context.scanBlocker(bluetoothOn: Boolean): String? = when {
     !bluetoothOn -> "Bluetooth is off."
     locationServicesBlockingScan() ->
         "Location Services is off. Android ${Build.VERSION.RELEASE} returns zero " +
-            "scan results without it, even though this app never uses your location."
+                "scan results without it, even though this app never uses your location."
     else -> null
 }
 
@@ -110,6 +123,8 @@ fun PlayerScreen(vm: PlayerViewModel = viewModel()) {
     val devices by vm.devices.collectAsState()
     val connectedTo by vm.connectedTo.collectAsState()
     val message by vm.message.collectAsState()
+    val files by vm.files.collectAsState()
+    val log by vm.log.collectAsState()
 
     val enableBluetooth = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -127,6 +142,10 @@ fun PlayerScreen(vm: PlayerViewModel = viewModel()) {
         }
     }
 
+    val pickFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let(vm::uploadFile) }
+
     // Explicitly typed: without it, the `when` infers the union of its branch types
     // and this becomes () -> Any, which won't match `onScan: () -> Unit`.
     val onScanTapped: () -> Unit = {
@@ -139,86 +158,81 @@ fun PlayerScreen(vm: PlayerViewModel = viewModel()) {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Music controller") }) }
+        topBar = { TopAppBar(title = { Text("ESP32 Audio Clock") }) }
     ) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
 
-            ConnectionCard(
-                connState = connState,
-                connectedTo = connectedTo,
-                message = message,
-                blocker = context.scanBlocker(vm.bluetoothEnabled),
-                showAll = vm.showAllDevices,
-                onShowAllChange = vm::updateShowAllDevices,
-                onScan = onScanTapped,
-                onDisconnect = vm::disconnect
-            )
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
 
-            if (connState != ConnState.READY) {
-                DeviceList(devices = devices, onPick = vm::connect)
-            } else {
-                TrackPicker(
-                    selected = vm.selectedTrack,
-                    onSelect = vm::selectTrack,
-                    modifier = Modifier.weight(1f)
+                ConnectionCard(
+                    connState = connState,
+                    connectedTo = connectedTo,
+                    message = message,
+                    blocker = context.scanBlocker(vm.bluetoothEnabled),
+                    showAll = vm.showAllDevices,
+                    manualAddress = vm.manualAddress,
+                    onManualAddressChange = vm::updateManualAddress,
+                    onManualConnect = vm::connectManual,
+                    onShowAllChange = vm::updateShowAllDevices,
+                    onScan = onScanTapped,
+                    onDisconnect = vm::disconnect
                 )
 
-                LabelledSlider(
-                    label = if (vm.durationMinutes == 0) "Play until stopped"
-                            else "Play for ${vm.durationMinutes} min",
-                    value = vm.durationMinutes,
-                    range = 0..120,
-                    onChange = vm::updateDuration
-                )
+                if (connState != ConnState.READY) {
+                    DeviceList(devices = devices, onPick = vm::connect)
+                } else {
+                    QuickActionsCard(
+                        onGetStatus = vm::getStatus,
+                        onListFiles = vm::refreshFiles,
+                        onSetTime = vm::setTimeNow,
+                        onUpload = { pickFile.launch(arrayOf("*/*")) }
+                    )
 
-                LabelledSlider(
-                    label = if (vm.startDelayMinutes == 0) "Start now"
-                            else "Start in ${vm.startDelayMinutes} min",
-                    value = vm.startDelayMinutes,
-                    range = 0..180,
-                    onChange = vm::updateStartDelay
-                )
+                    PlaybackCard(
+                        files = files,
+                        selected = vm.selectedTrack,
+                        onSelect = vm::selectTrack,
+                        onPlay = vm::playNow,
+                        onStop = vm::stop
+                    )
 
-                LabelledSlider(
-                    label = "Volume ${vm.volume}",
-                    value = vm.volume,
-                    range = 0..30,
-                    onChange = vm::updateVolume
-                )
+                    VolumeCard(
+                        volumeText = vm.volumeText,
+                        onVolumeTextChange = vm::updateVolumeText,
+                        onSetVolume = vm::setVolume,
+                        onVolUp = vm::volUp,
+                        onVolDown = vm::volDown
+                    )
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            if (vm.startDelayMinutes == 0) vm.playNow() else vm.playLater()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(if (vm.startDelayMinutes == 0) "Play" else "Schedule")
-                    }
-                    FilledTonalButton(onClick = vm::pause, modifier = Modifier.weight(1f)) {
-                        Text("Pause")
-                    }
-                    OutlinedButton(onClick = vm::stop, modifier = Modifier.weight(1f)) {
-                        Text("Stop")
-                    }
-                }
-
-                if (vm.startDelayMinutes > 0) {
-                    OutlinedButton(
-                        onClick = vm::cancelScheduled,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Cancel scheduled play") }
+                    AlarmCard(
+                        files = files,
+                        hour = vm.alarmHourText,
+                        minute = vm.alarmMinuteText,
+                        onHourChange = vm::updateAlarmHour,
+                        onMinuteChange = vm::updateAlarmMinute,
+                        recurrence = vm.alarmRecurrence,
+                        onRecurrenceChange = vm::updateAlarmRecurrence,
+                        weekday = vm.alarmWeekday,
+                        onWeekdayChange = vm::updateAlarmWeekday,
+                        alarmFile = vm.alarmFile,
+                        onAlarmFileChange = vm::selectAlarmFile,
+                        onAddAlarm = vm::addAlarm,
+                        onListAlarms = vm::listAlarms,
+                        onClearAlarms = vm::clearAlarms,
+                        deleteIndexText = vm.deleteAlarmIndexText,
+                        onDeleteIndexChange = vm::updateDeleteAlarmIndex,
+                        onDeleteAlarm = vm::deleteAlarm
+                    )
                 }
             }
+
+            LogPanel(lines = log, modifier = Modifier.fillMaxWidth().height(180.dp))
         }
     }
 }
@@ -230,6 +244,9 @@ private fun ConnectionCard(
     message: String?,
     blocker: String?,
     showAll: Boolean,
+    manualAddress: String,
+    onManualAddressChange: (String) -> Unit,
+    onManualConnect: () -> Unit,
     onShowAllChange: (Boolean) -> Unit,
     onScan: () -> Unit,
     onDisconnect: () -> Unit
@@ -268,6 +285,23 @@ private fun ConnectionCard(
             if (connState != ConnState.READY) {
                 Row(
                     Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = manualAddress,
+                        onValueChange = onManualAddressChange,
+                        label = { Text("BLE address (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(onClick = onManualConnect, enabled = manualAddress.isNotBlank()) {
+                        Text("Connect")
+                    }
+                }
+
+                Row(
+                    Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -275,7 +309,7 @@ private fun ConnectionCard(
                             style = MaterialTheme.typography.bodyMedium)
                         Text(
                             "Ignores the service-UUID filter. Turn this on if your " +
-                                "device does not advertise its service UUID.",
+                                    "device does not advertise its service UUID.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -304,29 +338,31 @@ private fun DeviceList(devices: List<DiscoveredDevice>, onPick: (String) -> Unit
         )
         return
     }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(devices, key = { it.address }) { d ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(d.name, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "${d.address}   ${d.rssi} dBm",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    if (d.advertisedServices.isEmpty()) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        devices.forEach { d ->
+            key(d.address) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(d.name, style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "No service UUID in advertisement",
+                            "${d.address}   ${d.rssi} dBm",
                             style = MaterialTheme.typography.bodySmall
                         )
-                    } else {
-                        Text(
-                            "Advertises: ${d.advertisedServices.joinToString()}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        if (d.advertisedServices.isEmpty()) {
+                            Text(
+                                "No service UUID in advertisement",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        } else {
+                            Text(
+                                "Advertises: ${d.advertisedServices.joinToString()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { onPick(d.address) }) { Text("Connect") }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { onPick(d.address) }) { Text("Connect") }
                 }
             }
         }
@@ -334,51 +370,301 @@ private fun DeviceList(devices: List<DiscoveredDevice>, onPick: (String) -> Unit
 }
 
 @Composable
-private fun TrackPicker(
-    selected: Int,
-    onSelect: (Int) -> Unit,
+private fun QuickActionsCard(
+    onGetStatus: () -> Unit,
+    onListFiles: () -> Unit,
+    onSetTime: () -> Unit,
+    onUpload: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onGetStatus) { Text("Get Status") }
+                OutlinedButton(onClick = onListFiles) { Text("List Files") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onSetTime) { Text("Set Time (now)") }
+                OutlinedButton(onClick = onUpload) { Text("Choose & Upload File") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaybackCard(
+    files: List<BleSpec.DeviceFile>,
+    selected: String?,
+    onSelect: (String) -> Unit,
+    onPlay: () -> Unit,
+    onStop: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Play file", style = MaterialTheme.typography.titleSmall)
+            FileDropdown(
+                files = files,
+                selected = selected,
+                onSelect = onSelect,
+                placeholder = "Choose a file"
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onPlay, enabled = selected != null) { Text("Play") }
+                OutlinedButton(onClick = onStop) { Text("Stop") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeCard(
+    volumeText: String,
+    onVolumeTextChange: (String) -> Unit,
+    onSetVolume: () -> Unit,
+    onVolUp: () -> Unit,
+    onVolDown: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Volume", style = MaterialTheme.typography.titleSmall)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = volumeText,
+                    onValueChange = onVolumeTextChange,
+                    label = { Text("0.0 - 1.0") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(onClick = onSetVolume) { Text("Set Volume") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onVolDown) { Text("Vol \u2212") }
+                OutlinedButton(onClick = onVolUp) { Text("Vol +") }
+            }
+        }
+    }
+}
+
+private val WEEKDAYS = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AlarmCard(
+    files: List<BleSpec.DeviceFile>,
+    hour: String,
+    minute: String,
+    onHourChange: (String) -> Unit,
+    onMinuteChange: (String) -> Unit,
+    recurrence: BleSpec.Recurrence,
+    onRecurrenceChange: (BleSpec.Recurrence) -> Unit,
+    weekday: Int?,
+    onWeekdayChange: (Int?) -> Unit,
+    alarmFile: String?,
+    onAlarmFileChange: (String) -> Unit,
+    onAddAlarm: () -> Unit,
+    onListAlarms: () -> Unit,
+    onClearAlarms: () -> Unit,
+    deleteIndexText: String,
+    onDeleteIndexChange: (String) -> Unit,
+    onDeleteAlarm: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Alarms", style = MaterialTheme.typography.titleSmall)
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = hour,
+                    onValueChange = onHourChange,
+                    label = { Text("HH") },
+                    singleLine = true,
+                    modifier = Modifier.width(80.dp)
+                )
+                OutlinedTextField(
+                    value = minute,
+                    onValueChange = onMinuteChange,
+                    label = { Text("MM") },
+                    singleLine = true,
+                    modifier = Modifier.width(80.dp)
+                )
+                RecurrenceDropdown(
+                    selected = recurrence,
+                    onSelect = onRecurrenceChange,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (recurrence == BleSpec.Recurrence.WEEKLY) {
+                WeekdayDropdown(selected = weekday, onSelect = onWeekdayChange)
+            }
+
+            Text("File to play", style = MaterialTheme.typography.bodyMedium)
+            FileDropdown(
+                files = files,
+                selected = alarmFile,
+                onSelect = onAlarmFileChange,
+                placeholder = "Choose a file"
+            )
+
+            Button(onClick = onAddAlarm, enabled = alarmFile != null) { Text("Add Alarm") }
+
+            HorizontalDivider()
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onListAlarms) { Text("List Alarms") }
+                OutlinedButton(onClick = onClearAlarms) { Text("Clear Alarms") }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = deleteIndexText,
+                    onValueChange = onDeleteIndexChange,
+                    label = { Text("Alarm index") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = onDeleteAlarm) { Text("Delete") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileDropdown(
+    files: List<BleSpec.DeviceFile>,
+    selected: String?,
+    onSelect: (String) -> Unit,
+    placeholder: String,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier) {
-        Text("Song", style = MaterialTheme.typography.titleSmall)
-        LazyColumn {
-            items(BleSpec.TRACKS) { track ->
-                val index = BleSpec.TRACKS.indexOf(track)
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .selectable(
-                            selected = index == selected,
-                            onClick = { onSelect(index) }
-                        )
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = index == selected,
-                        onClick = { onSelect(index) }
-                    )
-                    Text(track.title)
-                }
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selected ?: placeholder,
+            onValueChange = {},
+            readOnly = true,
+            trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = null) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            if (files.isEmpty()) {
+                DropdownMenuItem(text = { Text("No files on device") }, onClick = {})
+            }
+            files.forEach { file ->
+                DropdownMenuItem(
+                    text = { Text(file.name) },
+                    onClick = { onSelect(file.name); expanded = false }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RecurrenceDropdown(
+    selected: BleSpec.Recurrence,
+    onSelect: (BleSpec.Recurrence) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selected.name,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Recurrence") },
+            trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = null) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            BleSpec.Recurrence.values().forEach { r ->
+                DropdownMenuItem(
+                    text = { Text(r.name) },
+                    onClick = { onSelect(r); expanded = false }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WeekdayDropdown(
+    selected: Int?,
+    onSelect: (Int?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selected?.let { WEEKDAYS[it] } ?: "Choose weekday",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Weekday") },
+            trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = null) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            WEEKDAYS.forEachIndexed { index, label ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = { onSelect(index); expanded = false }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun LabelledSlider(
-    label: String,
-    value: Int,
-    range: IntRange,
-    onChange: (Int) -> Unit
-) {
-    Column {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onChange(it.toInt()) },
-            valueRange = range.first.toFloat()..range.last.toFloat()
-        )
+private fun LogPanel(lines: List<String>, modifier: Modifier = Modifier) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(lines.size) {
+        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+    }
+    Card(modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(8.dp)
+        ) {
+            items(lines) { line ->
+                Text(line, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            }
+        }
     }
 }
 

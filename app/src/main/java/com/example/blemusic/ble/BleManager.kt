@@ -21,6 +21,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,6 +87,22 @@ class BleManager(context: Context) {
     /** Last line received on the status characteristic, or the latest error text. */
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    /**
+     * Every decoded notification line, in order, buffered until read. This is
+     * the direct equivalent of the python script's asyncio.Queue of notification
+     * strings, and what BleProtocol's suspend functions receive() from.
+     */
+    private val notificationChannel = Channel<String>(Channel.UNLIMITED)
+    val statusLines: ReceiveChannel<String> get() = notificationChannel
+
+    /**
+     * Chunk size for FILE_DATA payloads, narrowed once the negotiated MTU is known.
+     * Mirrors the python script's self.chunk_size adjustment in connect().
+     */
+    @Volatile
+    var fileChunkSize: Int = BleSpec.DEFAULT_CHUNK_SIZE
+        private set
 
     val isBluetoothOn: Boolean get() = adapter?.isEnabled == true
 
@@ -300,6 +318,9 @@ class BleManager(context: Context) {
         writeQueued(payload)
     }
 
+    /** Convenience for the ASCII line protocol (GET_STATUS, PLAY:..., FILE_DATA:..., etc). */
+    fun sendText(command: String) = send(command.toByteArray(Charsets.US_ASCII))
+
     private fun writeQueued(payload: ByteArray) {
         enqueue("write ${payload.toHex()}") {
             val g = gatt
@@ -368,7 +389,7 @@ class BleManager(context: Context) {
                 return
             }
 
-            requestMtu(185)
+            requestMtu(512)
             statusChar?.let { enableNotifications(it) }
 
             _connState.value = ConnState.READY
@@ -382,6 +403,10 @@ class BleManager(context: Context) {
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             Log.d(TAG, "MTU = $mtu")
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu > 64) {
+                fileChunkSize = minOf(BleSpec.DEFAULT_CHUNK_SIZE, maxOf(64, mtu - 60))
+                Log.d(TAG, "fileChunkSize adjusted to $fileChunkSize")
+            }
             opComplete()
         }
 
@@ -431,14 +456,19 @@ class BleManager(context: Context) {
         main.post { teardown(notify = false) }
     }
 
-    /** Device -> phone. Adapt to whatever your firmware notifies. */
+    /** Device -> phone. One GATT notification = one protocol line, as in ble_full_test.py. */
     private fun handleStatus(bytes: ByteArray) {
         val printable = bytes.all { b ->
             val v = b.toInt() and 0xFF
             v in 0x20..0x7E || v == 0x0A || v == 0x0D
         }
-        _message.value =
-            if (printable) bytes.toString(Charsets.US_ASCII).trim() else bytes.toHex()
+        val line = if (printable) bytes.toString(Charsets.US_ASCII).trim() else bytes.toHex()
+        _message.value = line
+        if (printable) {
+            // Channel is UNLIMITED capacity, so trySend never suspends or drops —
+            // safe to call from a GATT callback, which must never block.
+            notificationChannel.trySend(line)
+        }
     }
 
     private fun requestMtu(mtu: Int) {
